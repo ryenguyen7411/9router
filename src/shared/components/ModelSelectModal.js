@@ -17,6 +17,79 @@ const PROVIDER_ORDER = [
 // Providers that need no auth — always show in model selector
 const NO_AUTH_PROVIDER_IDS = Object.keys(FREE_PROVIDERS).filter(id => FREE_PROVIDERS[id].noAuth);
 
+/** Build selectable models for OpenAI/Anthropic compatible nodes. */
+function collectCompatibleNodeModels({
+  providerId,
+  nodePrefix,
+  modelAliases,
+  enabledModels,
+}) {
+  const byModelId = new Map();
+
+  const add = (modelId, aliasName) => {
+    if (!modelId || typeof modelId !== "string") return;
+    const trimmedId = modelId.trim();
+    if (!trimmedId) return;
+    if (!byModelId.has(trimmedId)) {
+      byModelId.set(trimmedId, aliasName || trimmedId);
+    }
+  };
+
+  const stripKnownPrefixes = (raw) => {
+    let s = typeof raw === "string" ? raw.trim() : "";
+    if (!s) return "";
+    const intPfx = `${providerId}/`;
+    const dispPfx = nodePrefix && nodePrefix !== providerId ? `${nodePrefix}/` : null;
+    if (s.startsWith(intPfx)) s = s.slice(intPfx.length);
+    else if (dispPfx && s.startsWith(dispPfx)) s = s.slice(dispPfx.length);
+    return s.trim();
+  };
+
+  for (const [k, v] of Object.entries(modelAliases || {})) {
+    if (typeof v !== "string") continue;
+
+    // Canonical: alias key -> full path with internal provider id
+    if (v.startsWith(`${providerId}/`)) {
+      const modelId = v.slice(providerId.length + 1);
+      add(modelId, k);
+      continue;
+    }
+
+    // Canonical: alias key -> full path with display prefix only
+    if (nodePrefix && nodePrefix !== providerId && v.startsWith(`${nodePrefix}/`)) {
+      const modelId = v.slice(nodePrefix.length + 1);
+      add(modelId, k);
+      continue;
+    }
+
+    // Legacy inverted: full path key -> alias label value
+    if (k.startsWith(`${providerId}/`)) {
+      const modelId = k.slice(providerId.length + 1);
+      add(modelId, v || modelId);
+      continue;
+    }
+
+    if (nodePrefix && nodePrefix !== providerId && k.startsWith(`${nodePrefix}/`)) {
+      const modelId = k.slice(nodePrefix.length + 1);
+      add(modelId, v || modelId);
+    }
+  }
+
+  if (Array.isArray(enabledModels)) {
+    for (const raw of enabledModels) {
+      if (typeof raw !== "string" || !raw.trim()) continue;
+      const modelId = stripKnownPrefixes(raw);
+      if (modelId) add(modelId, modelId);
+    }
+  }
+
+  return [...byModelId.entries()].map(([id, name]) => ({
+    id,
+    name,
+    value: `${nodePrefix}/${id}`,
+  }));
+}
+
 export default function ModelSelectModal({
   isOpen,
   onClose,
@@ -117,15 +190,12 @@ export default function ModelSelectModal({
         const displayName = connection?.name || matchedNode?.name || providerInfo.name;
         const nodePrefix = connection?.providerSpecificData?.prefix || matchedNode?.prefix || providerId;
 
-        // Aliases are stored using the raw providerId as key (e.g. "openai-compatible-chat-<uuid>/glm-4.7"),
-        // so we must filter by providerId, not by the display prefix.
-        const nodeModels = Object.entries(modelAliases)
-          .filter(([, fullModel]) => fullModel.startsWith(`${providerId}/`))
-          .map(([aliasName, fullModel]) => ({
-            id: fullModel.replace(`${providerId}/`, ""),
-            name: aliasName,
-            value: `${nodePrefix}/${fullModel.replace(`${providerId}/`, "")}`,
-          }));
+        const nodeModels = collectCompatibleNodeModels({
+          providerId,
+          nodePrefix,
+          modelAliases,
+          enabledModels: connection?.providerSpecificData?.enabledModels,
+        });
 
         // Always show compatible providers that are connected, even with no aliases.
         // When no aliases exist, show a placeholder so users know it's available.
